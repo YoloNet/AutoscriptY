@@ -1,0 +1,77 @@
+#!/bin/bash
+HOST_URL="$(cat /root/install_link.txt )"
+# ==========================================
+LIMIT_DIR="/etc/klmpk/limit/ssh/ip"
+LOCK_MARK="/etc/klmpk/lock/ssh"
+LOCK_DURATION_FILE="/etc/klmpk/limit/ssh/lock_duration"
+
+mkdir -p "$LOCK_MARK"
+
+# Durasi kunci (default 15 menit)
+if [[ -f "$LOCK_DURATION_FILE" ]]; then
+    LOCK_DURATION=$(cat "$LOCK_DURATION_FILE")
+else
+    LOCK_DURATION=15
+fi
+
+# Cek log SSH aktif
+mulog=$(cekssh)
+
+# Fungsi kirim notif Telegram
+send_log_lock() {
+    BOT_FILE="/etc/bot/limitip.db"
+    [[ -f "$BOT_FILE" ]] || return
+
+    read -r _ bottoken idtelegram < <(grep '^#bot#' "$BOT_FILE")
+    [[ -z "$bottoken" || -z "$idtelegram" ]] && return
+
+    curl -s -X POST https://api.telegram.org/bot${bottoken}/sendMessage \
+        -d chat_id="${idtelegram}" \
+        -d text="🚫 *SSH User Warning:* \`$user\` melanggar batas login IP.
+*Status:* Dikunci sementara selama *$LOCK_DURATION menit*.
+*Jumlah IP Aktif:* $cekcek
+*Batas Maksimal:* $iplimit" \
+        -d parse_mode="Markdown" > /dev/null
+}
+
+send_log_unlock() {
+    BOT_FILE="/etc/bot/limitip.db"
+    [[ -f "$BOT_FILE" ]] || return
+
+    read -r _ bottoken idtelegram < <(grep '^#bot#' "$BOT_FILE")
+    [[ -z "$bottoken" || -z "$idtelegram" ]] && return
+
+    curl -s -X POST https://api.telegram.org/bot${bottoken}/sendMessage \
+        -d chat_id="${idtelegram}" \
+        -d text="✅ *SSH User:* \`$user\` telah *dibuka kembali* setelah terkunci $LOCK_DURATION menit." \
+        -d parse_mode="Markdown" > /dev/null
+}
+
+# Loop user
+for user in $(ls "$LIMIT_DIR"); do
+    iplimit=$(cat "$LIMIT_DIR/$user")
+    cekcek=$(echo "$mulog" | grep -w "$user" | wc -l)
+
+    # Jika melebihi limit IP
+    if [[ $cekcek -gt $iplimit ]]; then
+        if [[ ! -f "$LOCK_MARK/$user" ]]; then
+            echo "Akun $user melebihi limit IP, dikunci $LOCK_DURATION menit"
+            passwd -l "$user" > /dev/null
+            pkill -KILL -u "$user"  # Putus semua koneksi aktif
+            date +%s > "$LOCK_MARK/$user"
+            send_log_lock
+        fi
+    fi
+
+    # Jika terkunci dan waktunya sudah lewat
+    if [[ -f "$LOCK_MARK/$user" ]]; then
+        locktime=$(cat "$LOCK_MARK/$user")
+        now=$(date +%s)
+        unlocktime=$((locktime + LOCK_DURATION * 60))
+        if [[ $now -ge $unlocktime ]]; then
+            passwd -u "$user" > /dev/null
+            rm -f "$LOCK_MARK/$user"
+            send_log_unlock
+        fi
+    fi
+done

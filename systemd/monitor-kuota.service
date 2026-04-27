@@ -1,0 +1,6 @@
+[Unit]
+Description=Monitor Kuota SSH Per User
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/monitor-kuota.sh
